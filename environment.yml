@@ -1,0 +1,11 @@
+name: pose_from_depth_map3
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - numpy
+      - matplotlib
+      - open3d
