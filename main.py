@@ -106,10 +106,9 @@ def find_closest_planes(object_cloud, cluster_labels):
 def main():
     # Load the 4x4 extrinsics
     extrinsics = np.load("data/extrinsics.npy")
-    print(extrinsics)
     # Load the 3x3 pinhole camera matrix
     camera_matrix = np.load("data/intrinsics.npy")
-    print(camera_matrix)
+
     depth_map = np.load("data/one-box.depth.npdata.npy")
     # Depth shape is 1544x2064
     color_map = np.load("data/one-box.color.npdata.npy")
@@ -161,6 +160,18 @@ def main():
         extent[2] = z_distance
         new_center = obb.center - np.array([0, 0, z_distance / 2])  # Lower the center by z_distance/2 along the z-axis
         obb = o3d.geometry.OrientedBoundingBox(new_center, obb.R, extent)
+
+        # Print the pose of the oriented bounding box
+        translation = obb.center
+        orientation = obb.R
+        print("Translation (center):", translation)
+        print("Orientation (rotation matrix):\n", orientation)
+
+        # Construct the 4x4 transformation matrix
+        transformation_matrix = np.eye(4)
+        transformation_matrix[:3, :3] = orientation
+        transformation_matrix[:3, 3] = translation
+        print("4x4 Transformation Matrix:\n", transformation_matrix)
 
         # Save the oriented bounding box to disk
         bounding_box_data = {
