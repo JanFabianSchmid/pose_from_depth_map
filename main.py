@@ -51,6 +51,32 @@ def create_point_cloud_object(points_world_frame, rgb_image):
     return pcl
 
 
+def plane_segmentation(pcl, plane_dist_thresh=0.01):
+    _, inliers = pcl.segment_plane(distance_threshold=plane_dist_thresh, ransac_n=3, num_iterations=1000)
+    plane_cloud = pcl.select_by_index(inliers)
+    object_cloud = pcl.select_by_index(inliers, invert=True)
+    return object_cloud, plane_cloud
+
+
+def detect_clusters(pcl, cluster_eps=0.02, min_points=10):
+    # We use the DBSCAN algorithm to identify point clusters
+    labels = np.array(pcl.cluster_dbscan(eps=cluster_eps, min_points=min_points))
+    print(f"Detected {labels.max() + 1} clusters")
+    return labels
+
+
+def assign_cluster_colors(pcl, labels):
+    # Assign colors to points based on their cluster label
+    colors = np.zeros((len(labels), 3))
+    for i in range(labels.max() + 1):
+        color = np.random.rand(3)  # Generate a random color
+        colors[labels == i] = color
+
+    # Set the colors for the rest_cloud
+    pcl.colors = o3d.utility.Vector3dVector(colors)
+    return pcl
+
+
 def main():
     # Load the 4x4 extrinsics
     extrinsics = np.load("data/extrinsics.npy")
@@ -69,11 +95,26 @@ def main():
 
     rgb_image = decode_rgb444(color_map)
     color_image = Image.fromarray(rgb_image)
-    color_image.save(output_dir / "output_color_image.png")
+    color_image.save(output_dir / "color_image.png")
 
     points_world_frame = create_point_cloud_from_depth(depth_map, camera_matrix, extrinsics)
     pcl = create_point_cloud_object(points_world_frame=points_world_frame, rgb_image=rgb_image)
-    o3d.io.write_point_cloud(output_dir / "output_point_cloud.ply", pcl)
+    o3d.io.write_point_cloud(output_dir / "point_cloud.ply", pcl)
+
+    # Downsample
+    voxel_size: float = 0.01
+    pcl = pcl.voxel_down_sample(voxel_size)
+    # Remove outliers
+    pcl, _ = pcl.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
+
+    # Remove ground plane from the rest (i.e. objects)
+    object_cloud, plane_cloud = plane_segmentation(pcl, plane_dist_thresh=0.01)
+    o3d.io.write_point_cloud(output_dir / "ground_plane.ply", plane_cloud)
+
+    cluster_labels = detect_clusters(object_cloud)
+    o3d.io.write_point_cloud(
+        output_dir / "point_cloud_clustered.ply", assign_cluster_colors(object_cloud, cluster_labels)
+    )
 
 
 if __name__ == "__main__":
