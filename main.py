@@ -1,9 +1,47 @@
+import argparse
 import json
 from pathlib import Path
 
 import numpy as np
 import open3d as o3d
 from PIL import Image
+
+
+def parse_args():
+    """Parse arguments for box pose estimation script"""
+    parser = argparse.ArgumentParser(description="Box pose estimation script")
+    parser.add_argument(
+        "--extrinsics_path",
+        type=str,
+        help="Path to the extrinsics file",
+        default="data/extrinsics.npy",
+    )
+    parser.add_argument(
+        "--intrinsics_path",
+        type=str,
+        help="Path to the intrinsics file",
+        default="data/intrinsics.npy",
+    )
+    parser.add_argument(
+        "--depth_map_path",
+        type=str,
+        help="Path to the depth map",
+        default="data/one-box.depth.npdata.npy",
+    )
+    parser.add_argument(
+        "--color_map_path",
+        type=str,
+        help="Path to the color map",
+        default="data/one-box.color.npdata.npy",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        help="Output location for the results",
+        default="./output",
+    )
+    args = parser.parse_args()
+    return args
 
 
 def decode_rgb444(color):
@@ -104,18 +142,20 @@ def find_closest_planes(object_cloud, cluster_labels):
 
 
 def main():
-    # Load the 4x4 extrinsics
-    extrinsics = np.load("data/extrinsics.npy")
-    # Load the 3x3 pinhole camera matrix
-    camera_matrix = np.load("data/intrinsics.npy")
+    args = parse_args()
 
-    depth_map = np.load("data/one-box.depth.npdata.npy")
+    # Load the 4x4 extrinsics
+    extrinsics = np.load(args.extrinsics_path)
+    # Load the 3x3 pinhole camera matrix
+    camera_matrix = np.load(args.intrinsics_path)
+
+    depth_map = np.load(args.depth_map_path)
     # Depth shape is 1544x2064
-    color_map = np.load("data/one-box.color.npdata.npy")
+    color_map = np.load(args.color_map_path)
     # Color shape is 1544x2064
 
     # Create the output directory if it does not exist
-    output_dir = Path("output")
+    output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rgb_image = decode_rgb444(color_map)
@@ -124,7 +164,7 @@ def main():
 
     points_world_frame = create_point_cloud_from_depth(depth_map, camera_matrix, extrinsics)
     pcl = create_point_cloud_object(points_world_frame=points_world_frame, rgb_image=rgb_image)
-    o3d.io.write_point_cloud(output_dir / "point_cloud.ply", pcl)
+    o3d.io.write_point_cloud(output_dir / "full_point_cloud.ply", pcl)
 
     # Downsample
     voxel_size: float = 0.01
@@ -135,14 +175,27 @@ def main():
 
     # Remove ground plane from the rest (i.e. objects)
     object_cloud, plane_cloud = plane_segmentation(pcl, plane_dist_thresh=0.01)
+    o3d.io.write_point_cloud(output_dir / "extracted_plane.ply", plane_cloud)
 
     cluster_labels = detect_clusters(object_cloud)
-    o3d.io.write_point_cloud(
-        output_dir / "point_cloud_clustered.ply", assign_cluster_colors(object_cloud, cluster_labels)
-    )
+
+    # Create a merged point cloud of the object and plane
+    # Assign a new cluster label to the plane_cloud and merge it back into object_cloud
+    plane_label = cluster_labels.max() + 1
+    # Concatenate points and colors
+    merged_points = np.vstack((np.asarray(object_cloud.points), np.asarray(plane_cloud.points)))
+    merged_colors = np.vstack((np.asarray(object_cloud.colors), np.asarray(plane_cloud.colors)))
+    # Create new cluster labels array
+    labels = np.concatenate((cluster_labels, np.full(len(plane_cloud.points), plane_label, dtype=cluster_labels.dtype)))
+    # Create merged point cloud
+    merged_cloud = o3d.geometry.PointCloud()
+    merged_cloud.points = o3d.utility.Vector3dVector(merged_points)
+    merged_cloud.colors = o3d.utility.Vector3dVector(merged_colors)
+
+    o3d.io.write_point_cloud(output_dir / "full_point_cloud_clustered.ply", assign_cluster_colors(merged_cloud, labels))
 
     closest_plane_id, second_closest_plane_id, max_z_coord, second_max_z_coord = find_closest_planes(
-        object_cloud, cluster_labels
+        merged_cloud, labels
     )
 
     if closest_plane_id is not None and second_closest_plane_id is not None:
@@ -150,7 +203,7 @@ def main():
 
     # Fit a square into the closest_plane
     if closest_plane_id is not None:
-        closest_plane_points = object_cloud.select_by_index(np.where(cluster_labels == closest_plane_id)[0])
+        closest_plane_points = merged_cloud.select_by_index(np.where(labels == closest_plane_id)[0])
 
         # Fit an oriented bounding box to the closest plane points
         obb = closest_plane_points.get_oriented_bounding_box()
@@ -161,17 +214,18 @@ def main():
         new_center = obb.center - np.array([0, 0, z_distance / 2])  # Lower the center by z_distance/2 along the z-axis
         obb = o3d.geometry.OrientedBoundingBox(new_center, obb.R, extent)
 
-        # Print the pose of the oriented bounding box
+        # Print the pose of the oriented bounding box with two decimal places
         translation = obb.center
         orientation = obb.R
-        print("Translation (center):", translation)
-        print("Orientation (rotation matrix):\n", orientation)
+        np.set_printoptions(precision=2, suppress=True)
+        print("Translation (center):", np.round(translation, 2))
+        print("Orientation (rotation matrix):\n", np.round(orientation, 2))
 
         # Construct the 4x4 transformation matrix
         transformation_matrix = np.eye(4)
         transformation_matrix[:3, :3] = orientation
         transformation_matrix[:3, 3] = translation
-        print("4x4 Transformation Matrix:\n", transformation_matrix)
+        print("4x4 Transformation Matrix:\n", np.round(transformation_matrix, 2))
 
         # Save the oriented bounding box to disk
         bounding_box_data = {

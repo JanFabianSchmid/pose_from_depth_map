@@ -1,4 +1,4 @@
-name: pose_from_depth_map3
+name: pose_from_depth_map
 channels:
   - conda-forge
   - defaults
